@@ -4,7 +4,6 @@
   if (window.__arcPeekInstalled) return;
   window.__arcPeekInstalled = true;
 
-  const isMac = /Mac|iPhone|iPad/.test(navigator.userAgentData?.platform || navigator.platform || "");
   const ACCENT = "#5b4cff";
   const FRAME_NAME = "arcpeek-frame";
   let current = null; // { host, close, frame }
@@ -15,7 +14,9 @@
   if (window !== window.top && !inPreview) return;
 
   function isPeekClick(e) {
-    return e.button === 0 && e.shiftKey && !e.altKey && (isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey);
+    // Cmd+Shift on Mac, Ctrl+Shift elsewhere. No OS detection: it is easy to get
+    // wrong (Chrome reports "macOS", not "Mac"), and accepting either is harmless.
+    return e.button === 0 && e.shiftKey && !e.altKey && (e.metaKey || e.ctrlKey);
   }
 
   function linkFromEvent(e) {

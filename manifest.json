@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Arc風スクリーンショット＆プレビュー",
   "short_name": "ArcShot",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Arcブラウザのような機能をChromeに。要素をクリックで切り抜くスクリーンショットと、リンクを開かずに中身を見られるプレビュー。",
   "permissions": [
     "activeTab",
