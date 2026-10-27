@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "Arc風スクリーンショット＆プレビュー",
-  "short_name": "ArcShot",
-  "version": "1.1.1",
-  "description": "Arcブラウザのような機能をChromeに。要素をクリックで切り抜くスクリーンショットと、リンクを開かずに中身を見られるプレビュー。",
+  "name": "Arc再現 - スクショ＆プレビュー",
+  "short_name": "Arc再現",
+  "version": "1.1.2",
+  "description": "ArcブラウザのスクリーンショットとリンクプレビューをChromeで再現。要素をクリックで切り抜き、リンクを開かずに中身を確認できます。",
   "permissions": [
     "activeTab",
     "scripting",
