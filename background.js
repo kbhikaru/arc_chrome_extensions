@@ -54,3 +54,47 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 });
+
+// ---------- Link preview (peek.js) ----------
+// Many sites send X-Frame-Options / CSP frame-ancestors to forbid being shown
+// inside another page. While a preview is open, strip those headers for
+// frames in that one tab only; the rule is removed when the preview closes.
+const PEEK_HEADERS = ["x-frame-options", "content-security-policy"];
+
+async function allowFraming(tabId) {
+  await chrome.declarativeNetRequest.updateSessionRules({
+    removeRuleIds: [tabId],
+    addRules: [
+      {
+        id: tabId,
+        priority: 1,
+        action: {
+          type: "modifyHeaders",
+          responseHeaders: PEEK_HEADERS.map((header) => ({ header, operation: "remove" })),
+        },
+        condition: { tabIds: [tabId], resourceTypes: ["sub_frame"] },
+      },
+    ],
+  });
+}
+
+async function disallowFraming(tabId) {
+  await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [tabId] });
+}
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  const tab = sender.tab;
+  if (!tab || !msg?.type?.startsWith("arcpeek:")) return;
+  let work;
+  if (msg.type === "arcpeek:open") work = allowFraming(tab.id);
+  else if (msg.type === "arcpeek:close") work = disallowFraming(tab.id);
+  else if (msg.type === "arcpeek:openTab")
+    work = chrome.tabs.create({ url: msg.url, index: tab.index + 1, openerTabId: tab.id, windowId: tab.windowId });
+  else return;
+  work
+    .then(() => sendResponse({ ok: true }))
+    .catch((err) => sendResponse({ ok: false, error: String(err?.message || err) }));
+  return true;
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => disallowFraming(tabId).catch(() => {}));
