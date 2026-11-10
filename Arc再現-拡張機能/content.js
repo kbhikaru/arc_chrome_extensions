@@ -11,6 +11,7 @@
   const MIN_ELEMENT_SIZE = 12; // ignore tiny elements (icons in text, etc.)
   const DRAG_THRESHOLD = 5; // px before a mousedown counts as a drag
   const MAX_CANVAS_HEIGHT = 16000; // CSS px limit for tall element captures
+  const MAX_FULLPAGE_PX = 32000; // device px; Chrome cannot make taller canvases
   const ACCENT = "#5b4cff";
 
   // ---------- UI (inside a shadow root so page CSS cannot interfere) ----------
@@ -47,15 +48,41 @@
       kbd {
         font: inherit; background: rgba(255,255,255,.18); border-radius: 4px; padding: 0 5px; margin: 0 2px;
       }
+      .toolbar {
+        position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); pointer-events: auto;
+        display: flex; align-items: center; gap: 4px; padding: 5px;
+        background: rgba(20, 20, 24, 0.9); border-radius: 999px; box-shadow: 0 6px 24px rgba(0,0,0,.3);
+        font: 500 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", sans-serif;
+        cursor: default; animation: up .18s ease-out;
+      }
+      @keyframes up { from { transform: translate(-50%, 10px); opacity: 0; } }
+      .toolbar button {
+        display: flex; align-items: center; gap: 6px; font: inherit; color: #fff; border: 0; cursor: pointer;
+        background: ${ACCENT}; padding: 9px 16px; border-radius: 999px; white-space: nowrap;
+      }
+      .toolbar button:hover { background: #6f62ff; }
+      .toolbar button.x { background: transparent; color: #aaa; padding: 9px 12px; }
+      .toolbar button.x:hover { background: rgba(255,255,255,.12); color: #fff; }
+      .toolbar svg { width: 15px; height: 15px; }
     </style>
     <div class="layer"></div>
     <div class="box"></div>
     <div class="label"></div>
     <div class="hint">クリックで要素を撮影 ・ ドラッグで範囲指定 ・ <kbd>↑</kbd><kbd>↓</kbd> 親/子要素 ・ <kbd>Esc</kbd> キャンセル</div>
+    <div class="toolbar">
+      <button class="full" title="ページ全体を1枚の画像で撮影">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="1.5" width="10" height="13" rx="1.5"/><path d="M8 5v6M5.5 8.5 8 11l2.5-2.5"/>
+        </svg>
+        ページ全体を撮影
+      </button>
+      <button class="x" title="キャンセル (Esc)">✕</button>
+    </div>
   `;
   const layer = shadow.querySelector(".layer");
   const box = shadow.querySelector(".box");
   const label = shadow.querySelector(".label");
+  const toolbar = shadow.querySelector(".toolbar");
   (document.body || document.documentElement).appendChild(host);
   setTimeout(() => shadow.querySelector(".hint").classList.add("fade"), 3500);
 
@@ -228,6 +255,19 @@
     blockEvent(e);
     cancel();
   });
+  // Bottom toolbar: hovering it hides the element highlight; its clicks never start a capture.
+  toolbar.addEventListener("mouseenter", () => {
+    if (!dragStart) highlight(null);
+  });
+  toolbar.addEventListener("mousedown", (e) => e.stopPropagation());
+  toolbar.querySelector(".full").addEventListener("click", (e) => {
+    blockEvent(e);
+    if (!busy) captureFullPage();
+  });
+  toolbar.querySelector(".x").addEventListener("click", (e) => {
+    blockEvent(e);
+    cancel();
+  });
   window.addEventListener("mouseup", onMouseUp, true);
   window.addEventListener("keydown", onKeyDown, true);
   window.addEventListener("scroll", onScroll, true);
@@ -390,9 +430,120 @@
     await finish(canvas);
   }
 
-  function hideFloatingElements(target, restored) {
+  // ---------- full page ----------
+  // The thing that scrolls: normally the document, but many web apps keep
+  // the page fixed and scroll an inner panel instead. Pick the biggest one.
+  function findScroller() {
+    const doc = document.scrollingElement || document.documentElement;
+    if (doc.scrollHeight > window.innerHeight + 1) return doc;
+    let best = null;
+    let bestArea = 0;
+    for (const el of document.querySelectorAll("body *")) {
+      if (el.scrollHeight <= el.clientHeight + 1 || el.clientHeight < 100) continue;
+      const oy = getComputedStyle(el).overflowY;
+      if (oy !== "auto" && oy !== "scroll" && oy !== "overlay") continue;
+      const r = el.getBoundingClientRect();
+      const area = visibleRect(r).width * visibleRect(r).height;
+      if (area > bestArea) {
+        best = el;
+        bestArea = area;
+      }
+    }
+    return best || doc;
+  }
+
+  async function captureFullPage() {
+    await hideOverlay();
+    const scroller = findScroller();
+    const isDoc = scroller === (document.scrollingElement || document.documentElement);
+    const startTop = scroller.scrollTop;
+    const startX = window.scrollX;
+    const startY = window.scrollY;
+    const restored = [];
+    try {
+      // Visible box of the scrolling area, without its scrollbar.
+      const area = () => {
+        if (isDoc) return { left: 0, top: 0, width: document.documentElement.clientWidth, height: window.innerHeight };
+        const r = scroller.getBoundingClientRect();
+        const v = visibleRect({
+          left: r.left + scroller.clientLeft,
+          top: r.top + scroller.clientTop,
+          right: r.left + scroller.clientLeft + scroller.clientWidth,
+          bottom: r.top + scroller.clientTop + scroller.clientHeight,
+        });
+        return v;
+      };
+
+      scroller.scrollTo({ top: 0, behavior: "instant" });
+      await settle(150);
+
+      let canvas = null;
+      let ctx = null;
+      let s = 1;
+      let total = 0;
+      let covered = 0;
+      let truncated = false;
+
+      for (let i = 0; ; i++) {
+        const a = area();
+        const top = scroller.scrollTop;
+        const img = await captureViewport();
+        if (!canvas) {
+          s = img.naturalWidth / window.innerWidth;
+          const maxH = Math.floor(MAX_FULLPAGE_PX / s); // browser canvas size limit
+          total = scroller.scrollHeight;
+          if (total > maxH) {
+            total = maxH;
+            truncated = true;
+          }
+          canvas = document.createElement("canvas");
+          canvas.width = Math.round(a.width * s);
+          canvas.height = Math.round(total * s);
+          ctx = canvas.getContext("2d");
+        }
+        // Rows of the page now on screen: [top, top + a.height). Draw the new part.
+        const from = Math.max(covered, top);
+        const to = Math.min(top + a.height, total);
+        if (to > from) {
+          ctx.drawImage(
+            img,
+            a.left * s, (a.top + from - top) * s, a.width * s, (to - from) * s,
+            0, from * s, a.width * s, (to - from) * s
+          );
+          covered = to;
+        }
+        if (covered >= total) break;
+
+        if (i === 0) {
+          // Fixed headers / sticky bars would repeat in every slice: keep them
+          // only in the first one.
+          hideFloatingElements(scroller, restored, { keepDescendants: false });
+        }
+        scroller.scrollTo({ top: covered, behavior: "instant" });
+        await settle(150);
+        if (Math.abs(scroller.scrollTop - top) < 1) break; // cannot scroll further
+      }
+
+      if (covered < total - 0.5) {
+        const trimmed = document.createElement("canvas");
+        trimmed.width = canvas.width;
+        trimmed.height = Math.max(1, Math.round(covered * s));
+        trimmed.getContext("2d").drawImage(canvas, 0, 0);
+        canvas = trimmed;
+      }
+      await finish(canvas, truncated ? "ページが長すぎるため、途中までを撮影しました" : "");
+    } catch (err) {
+      fail(err);
+    } finally {
+      for (const [node, value, priority] of restored) node.style.setProperty("visibility", value, priority);
+      scroller.scrollTo({ top: startTop, behavior: "instant" });
+      if (!isDoc) window.scrollTo({ left: startX, top: startY, behavior: "instant" });
+    }
+  }
+
+  function hideFloatingElements(target, restored, { keepDescendants = true } = {}) {
     for (const node of document.querySelectorAll("body *")) {
-      if (node === host || node.contains(target) || target.contains(node)) continue;
+      if (node === host || node.contains(target) || (keepDescendants && target.contains(node))) continue;
       const pos = getComputedStyle(node).position;
       if (pos === "fixed" || pos === "sticky") {
         restored.push([node, node.style.getPropertyValue("visibility"), node.style.getPropertyPriority("visibility")]);
@@ -402,7 +553,7 @@
   }
 
   // ---------- result ----------
-  async function finish(canvas) {
+  async function finish(canvas, note = "") {
     teardownPicker();
     const blob = await new Promise((r) => canvas.toBlob(r, "image/png"));
     const dataUrl = canvas.toDataURL("image/png");
@@ -414,7 +565,7 @@
     } catch (err) {
       console.warn("ArcShot: clipboard write failed", err);
     }
-    showToast(dataUrl, copied);
+    showToast(dataUrl, copied, null, note);
     delete window.__arcShot;
   }
 
@@ -425,7 +576,7 @@
     showToast(null, false, "スクリーンショットに失敗しました");
   }
 
-  function showToast(dataUrl, copied, errorText) {
+  function showToast(dataUrl, copied, errorText, note = "") {
     const t = document.createElement("arcshot-toast");
     t.style.cssText = "all: initial; position: fixed; right: 20px; bottom: 20px; z-index: 2147483647;";
     const sh = t.attachShadow({ mode: "closed" });
@@ -472,6 +623,7 @@
     } else {
       title.textContent = copied ? "クリップボードにコピーしました" : "スクリーンショットを撮りました";
       sub.textContent = copied ? "⌘V / Ctrl+V で貼り付けできます" : "「コピー」または「保存」を選んでください";
+      if (note) sub.textContent = note;
     }
 
     let timer = null;

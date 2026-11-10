@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Arc再現 - スクショ＆プレビュー",
   "short_name": "Arc再現",
-  "version": "1.1.2",
+  "version": "1.2.0",
   "description": "ArcブラウザのスクリーンショットとリンクプレビューをChromeで再現。要素をクリックで切り抜き、リンクを開かずに中身を確認できます。",
   "permissions": [
     "activeTab",
